@@ -1,0 +1,280 @@
+openapi: '3.0.0'
+info:
+  title: "Weenat Test Backend"
+  description: "This documentation aims to provides the requirements that should be met."
+  version: "1.0"
+components:
+  parameters:
+    sinceParam: {
+      "name": "since",
+      "in": "query",
+      "description": "Filter by date and time. Ingestion date of returned records should be higher than the value provided. Format expected ISO-8601.",
+      "schema": {
+        "type": "string",
+        "format": "date-time",
+      }
+    }
+    beforeParam: {
+      "name": "before",
+      "in": "query",
+      "description": "Filter by date and time. Ingestion date of returned records should be lower than the value provided. Default is now. Format expected ISO-8601.",
+      "schema": {
+        "type": "string",
+        "format": "date-time",
+      },
+      "allowEmptyValue": true,
+    }
+    spanParam: {
+      "name": "span",
+      "in": "query",
+      "description": "Aggregates data given this parameter. Default value should be raw (meaning no aggregate).",
+      "schema": {
+        "type": "string",
+        "enum": ["day", "hour"]
+      }
+    }
+    dataloggerParam: {
+      "name": "datalogger",
+      "in": "query",
+      "description": "Filter by datalogger. This field is required. Should be an exact match of the datalogger id",
+      "required": true,
+      "schema": {
+        "type": "string",
+      }
+    }
+  schemas:
+    labelField: {
+      "type": "string",
+      "enum": ["temp", "rain", "hum"],
+      "description": "Name of the metric."
+    }
+    DataRecordRequest: {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the metric is recorded. Format expected ISO-8601."
+        },
+        "datalogger": {
+          "type": "string",
+          "format": "uuid",
+          "description": "UUID of the device that has recorded the value. This is an unique id per device."
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "format": "float",
+              "description": "Latitude using float representation."
+            },
+            "lng": {
+              "type": "number",
+              "format": "float",
+              "description": "Longitude using float representation."
+            }
+          }
+        },
+        "measurements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "$ref": "#/components/schemas/labelField"
+              },
+              "value": {
+                "type": "number",
+                "description": "Data can be random. temp range between -20 and 40 (step of 0.1). hum between 20 and 100 (step of 0.1). rain between 0 and 2 (step of 0.2)"
+              }
+            }
+          }
+        }
+      }
+    }
+    DataRecordResponse: {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "$ref": "#/components/schemas/labelField"
+          },
+          "measured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "value": {
+            "type": "number",
+            "format": "float"
+          }
+        },
+      }
+    }
+    DataRecordAggregateResponse: {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "$ref": "#/components/schemas/labelField"
+          },
+          "time_slot": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Begining of the range trimmed to the span. Eg.: if span = day, this value would be: 2021-12-01T00:00:00, 2021-12-02T00:00:00",
+          },
+          "value": {
+            "type": "number",
+            "format": "float",
+            "description": "Aggregate of the measurement within the range. Mean for temp and hum metrics, Sum for the rain."
+          }
+        }
+      }
+    }
+paths:
+  "/api/ingest":
+    post: {
+      "operationId": "api_ingest_data",
+      "description": "Endpoint to store measurement datapoint.",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "examples": {
+              "example1": {
+                "value": {
+                  "at": "2021-01-02T05:46:22Z",
+                  "datalogger": "c2a61e2e-068d-4670-a97c-72bfa5e2a58a",
+                  "location": {
+                    "lat": 47.56321,
+                    "lng": 1.524568,
+                  },
+                  "measurements": [
+                    {
+                      "label": "temp",
+                      "value": 10.52,
+                    },
+                    {
+                      "label": "rain",
+                      "value": 0,
+                    },
+                  ]
+                }
+              },
+              "example2": {
+                "value": {
+                  "at": "2021-01-02T05:26:27Z",
+                  "datalogger": "c2a61e2e-068d-4670-a97c-72bfa5e2a58a",
+                  "location": {
+                    "lat": 47.56321,
+                    "lng": 1.524568,
+                  },
+                  "measurements": [
+                    {
+                      "label": "temp",
+                      "value": 10.52,
+                    },
+                    {
+                      "label": "rain",
+                      "value": 0,
+                    },
+                    {
+                      "label": "hum",
+                      "value": 79.5,
+                    },
+                  ]
+                }
+              },
+              "example3": {
+                "value": {
+                  "at": "2021-01-02T05:25:27Z",
+                  "datalogger": "e6e4ae22-f8dd-4e9e-b0e6-7e2ddbc2c4ac",
+                  "location": {
+                    "lat": 49.56321,
+                    "lng": -1.528768,
+                  },
+                  "measurements": [
+                    {
+                      "label": "temp",
+                      "value": 8.27,
+                    },
+                    {
+                      "label": "rain",
+                      "value": 0.5,
+                    },
+                    {
+                      "label": "hum",
+                      "value": 79.5,
+                    },
+                  ]
+                }
+              }
+            },
+            "schema": {
+                "$ref": "#/components/schemas/DataRecordRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Record is inserted successfully",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+              }            
+            }
+          }
+        }
+      }
+    }
+  "/api/summary":
+    get: {
+      "operationId": "api_fetch_data_aggregates",
+      "description": "Endpoint to returns the data stored. The output will be either raw data or aggregates. The behaviour is driven by the query parameter span.",
+      "parameters": [
+        {"$ref": "#/components/parameters/sinceParam"},
+        {"$ref": "#/components/parameters/beforeParam"},
+        {"$ref": "#/components/parameters/spanParam"},
+        {"$ref": "#/components/parameters/dataloggerParam"},
+      ],
+      "responses": {
+        "200": {
+          "description": "Array of records matching the input criteria",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataRecordAggregateResponse"
+              }
+            }
+          }
+        }
+      }
+    }
+  "/api/data":
+    get: {
+      "operationId": "api_fetch_data_raw",
+      "description": "Endpoint to returns the data stored. The output is the raw data stored.",
+      "parameters": [
+        {"$ref": "#/components/parameters/sinceParam"},
+        {"$ref": "#/components/parameters/beforeParam"},
+        {"$ref": "#/components/parameters/dataloggerParam"},
+      ],
+      "responses": {
+        "400": {
+          "description": "Missing required values."
+        },
+        "200": {
+          "description": "Array of records matching the input criteria",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataRecordResponse"
+              }
+            }
+          }
+        }
+      }
+    }

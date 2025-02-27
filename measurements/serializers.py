@@ -1,5 +1,11 @@
+from django.core.validators import MinValueValidator
 from rest_framework import serializers
-from .models import Datalogger, Location, Measurement
+from .models import Measurement
+
+
+class LocationRequestSerializer(serializers.Serializer):
+    lat = serializers.FloatField(validators=[MinValueValidator(0.0)])
+    lng = serializers.FloatField(validators=[MinValueValidator(0.0)])
 
 
 class MeasurementRequestSerializer(serializers.Serializer):
@@ -10,12 +16,12 @@ class MeasurementRequestSerializer(serializers.Serializer):
 class DataRecordRequestSerializer(serializers.Serializer):
     at = serializers.DateTimeField()
     datalogger = serializers.UUIDField()
-    location = serializers.DictField(child=serializers.FloatField())
+    location = LocationRequestSerializer()
     measurements = serializers.ListField(child=MeasurementRequestSerializer())
 
-    def validate_measurements(self, value):
+    def validate_measurements(self, measurements):
         # Validate measurement values based on label
-        for measurement in value:
+        for measurement in measurements:
             label = measurement["label"]
             m_value = measurement["value"]
 
@@ -32,12 +38,12 @@ class DataRecordRequestSerializer(serializers.Serializer):
                     f"Rainfall must be between 0 and 2, got {m_value}"
                 )
 
-        return value
+        return measurements
 
 
 class DataRecordResponseSerializer(serializers.Serializer):
     label = serializers.ChoiceField(choices=["temp", "rain", "hum"])
-    measured_at = serializers.DateTimeField()
+    recorded_at = serializers.DateTimeField()
     value = serializers.FloatField()
 
 

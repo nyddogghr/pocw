@@ -1,4 +1,5 @@
-from django.db.models import Avg, Sum, F
+from django.db.models import Avg, Sum, F, Q
+from django.db.models.functions import TruncDay, TruncHour
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -6,7 +7,7 @@ from rest_framework.response import Response
 import datetime
 import uuid
 
-from .models import Datalogger, Location, Measurement
+from .models import Measurement
 from .serializers import (
     DataRecordRequestSerializer,
     DataRecordResponseSerializer,
@@ -23,24 +24,13 @@ def ingest_data(request):
 
     data = serializer.validated_data
 
-    # Get or create datalogger
-    datalogger_id = data["datalogger"]
-    datalogger, created = Datalogger.objects.get_or_create(id=datalogger_id)
-
-    # Create location
-    location_data = data["location"]
-    location = Location.objects.create(
-        lat=location_data["lat"], lng=location_data["lng"], datalogger=datalogger
-    )
-
-    # Create measurements
     for measurement_data in data["measurements"]:
         Measurement.objects.create(
             label=measurement_data["label"],
             value=measurement_data["value"],
-            measured_at=data["at"],
-            datalogger=datalogger,
-            location=location,
+            recorded_at=data["at"],
+            datalogger=data["datalogger"],
+            location=data["location"],
         )
 
     return Response({}, status=status.HTTP_200_OK)
@@ -49,8 +39,8 @@ def ingest_data(request):
 @api_view(["GET"])
 def fetch_data_raw(request):
     # Required parameter
-    datalogger_id = request.query_params.get("datalogger")
-    if not datalogger_id:
+    datalogger = request.query_params.get("datalogger")
+    if not datalogger:
         return Response(
             {"error": "Missing required datalogger parameter"},
             status=status.HTTP_400_BAD_REQUEST,
@@ -61,25 +51,22 @@ def fetch_data_raw(request):
     before = request.query_params.get("before", timezone.now().isoformat())
 
     try:
-        # Validate and convert UUID
-        datalogger_uuid = uuid.UUID(datalogger_id)
+        datalogger_uuid = uuid.UUID(datalogger)
 
-        # Build query
-        queryset = Measurement.objects.filter(datalogger_id=datalogger_uuid)
+        queryset = Measurement.objects.filter(datalogger=datalogger_uuid)
 
         if since:
-            queryset = queryset.filter(ingested_at__gt=since)
+            queryset = queryset.filter(recorded_at__gt=since)
 
         if before:
-            queryset = queryset.filter(ingested_at__lt=before)
+            queryset = queryset.filter(recorded_at__lt=before)
 
-        # Prepare response data
         data = []
         for measurement in queryset:
             data.append(
                 {
                     "label": measurement.label,
-                    "measured_at": measurement.measured_at.isoformat(),
+                    "recorded_at": measurement.recorded_at.isoformat(),
                     "value": measurement.value,
                 }
             )
@@ -88,7 +75,7 @@ def fetch_data_raw(request):
         serializer.is_valid()
         return Response(serializer.data)
 
-    except (ValueError, uuid.UUID.error):
+    except ValueError:
         return Response(
             {"error": "Invalid datalogger ID format"},
             status=status.HTTP_400_BAD_REQUEST,
@@ -98,8 +85,8 @@ def fetch_data_raw(request):
 @api_view(["GET"])
 def fetch_data_aggregates(request):
     # Required parameter
-    datalogger_id = request.query_params.get("datalogger")
-    if not datalogger_id:
+    datalogger = request.query_params.get("datalogger")
+    if not datalogger:
         return Response(
             {"error": "Missing required datalogger parameter"},
             status=status.HTTP_400_BAD_REQUEST,
@@ -108,29 +95,26 @@ def fetch_data_aggregates(request):
     # Optional filters
     since = request.query_params.get("since")
     before = request.query_params.get("before", timezone.now().isoformat())
-    span = request.query_params.get("span", "raw")
+    span = request.query_params.get("span")
 
     try:
-        # Validate and convert UUID
-        datalogger_uuid = uuid.UUID(datalogger_id)
+        datalogger_uuid = uuid.UUID(datalogger)
 
-        # Build base query
-        queryset = Measurement.objects.filter(datalogger_id=datalogger_uuid)
+        queryset = Measurement.objects.filter(datalogger=datalogger_uuid)
 
         if since:
-            queryset = queryset.filter(ingested_at__gt=since)
+            queryset = queryset.filter(recorded_at__gt=since)
 
         if before:
-            queryset = queryset.filter(ingested_at__lt=before)
+            queryset = queryset.filter(recorded_at__lt=before)
 
-        # Handle raw data case
-        if span == "raw":
+        if span is None:
             data = []
             for measurement in queryset:
                 data.append(
                     {
                         "label": measurement.label,
-                        "measured_at": measurement.measured_at.isoformat(),
+                        "recorded_at": measurement.recorded_at.isoformat(),
                         "value": measurement.value,
                     }
                 )
@@ -139,62 +123,48 @@ def fetch_data_aggregates(request):
             serializer.is_valid()
             return Response(serializer.data)
 
-        # Handle aggregation
         result = []
 
-        # Process each label type separately
-        for label in ["temp", "rain", "hum"]:
-            label_queryset = queryset.filter(label=label)
+        # Group by time slot according to span
+        if span == "day":
+            date_trunc = "day"
+        elif span == "hour":
+            date_trunc = "hour"
+        else:
+            return Response(
+                {"error": "Invalid span parameter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            if not label_queryset.exists():
-                continue
+        if span == "day":
+            queryset = queryset.annotate(time_slot=TruncDay("recorded_at"))
+        else:  # hour
+            queryset = queryset.annotate(time_slot=TruncHour("recorded_at"))
 
-            # Group by time slot according to span
-            if span == "day":
-                date_trunc = "day"
-            elif span == "hour":
-                date_trunc = "hour"
-            else:
-                return Response(
-                    {"error": "Invalid span parameter"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        # Group by time_slot and apply the appropriate aggregation
+        # Mean for temp and hum, Sum for rain
+        group_queryset = queryset.values("time_slot", "label")
+        temp = Avg("value", filter=Q(label="temp"))
+        hum = Avg("value", filter=Q(label="hum"))
+        rain = Sum("value", filter=Q(label="rain"))
+        group_queryset = (
+            group_queryset.annotate(temp=temp).annotate(hum=hum).annotate(rain=rain)
+        )
 
-            from django.db.models.functions import TruncDay, TruncHour
-
-            if span == "day":
-                label_queryset = label_queryset.annotate(
-                    time_slot=TruncDay("measured_at")
-                )
-            else:  # hour
-                label_queryset = label_queryset.annotate(
-                    time_slot=TruncHour("measured_at")
-                )
-
-            # Group by time_slot and apply the appropriate aggregation
-            # Mean for temp and hum, Sum for rain
-            group_queryset = label_queryset.values("time_slot", "label")
-
-            if label in ["temp", "hum"]:
-                group_queryset = group_queryset.annotate(value=Avg("value"))
-            else:  # rain
-                group_queryset = group_queryset.annotate(value=Sum("value"))
-
-            # Add to results
-            for item in group_queryset:
-                result.append(
-                    {
-                        "label": item["label"],
-                        "time_slot": item["time_slot"].isoformat(),
-                        "value": item["value"],
-                    }
-                )
+        for item in group_queryset:
+            result.append(
+                {
+                    "label": item["label"],
+                    "time_slot": item["time_slot"].isoformat(),
+                    "value": item[item["label"]],
+                }
+            )
 
         serializer = DataRecordAggregateResponseSerializer(data=result, many=True)
         serializer.is_valid()
         return Response(serializer.data)
 
-    except (ValueError, uuid.UUID.error):
+    except ValueError:
         return Response(
             {"error": "Invalid datalogger ID format"},
             status=status.HTTP_400_BAD_REQUEST,

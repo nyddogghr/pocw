@@ -2,6 +2,7 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+import subprocess
 
 
 def main():
@@ -15,7 +16,16 @@ def main():
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
         ) from exc
-    execute_from_command_line(sys.argv)
+    # wrap pytest command here so we don't have to manage
+    # PYTHONPATH in multiple places. django-pytest unfortunately
+    # doesn't provide native management commands so we still need
+    # to invoke pytest directly
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        pytest_args = " ".join(sys.argv[2:])
+        os.environ["PYTHONPATH"] = sys.path[0]
+        subprocess.run(f"pytest {pytest_args}", shell=True, env=os.environ)
+    else:
+        execute_from_command_line(sys.argv)
 
 
 if __name__ == "__main__":
